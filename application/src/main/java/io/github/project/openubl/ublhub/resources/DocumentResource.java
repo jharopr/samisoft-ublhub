@@ -370,7 +370,6 @@ public class DocumentResource {
         if (documentEntity == null) {
             return documentDtoNotFoundResponse.get();
         }
-
         DocumentDto dto = documentMapper.toDto(documentEntity);
         return documentDtoSuccessResponse.apply(dto);
     }

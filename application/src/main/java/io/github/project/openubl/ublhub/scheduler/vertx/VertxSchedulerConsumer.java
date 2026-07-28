@@ -30,6 +30,7 @@ import io.github.project.openubl.ublhub.ubl.sender.XMLSenderManager;
 import io.github.project.openubl.ublhub.ubl.sender.exceptions.ConnectToSUNATException;
 import io.github.project.openubl.ublhub.ubl.sender.exceptions.ReadXMLFileContentException;
 import io.github.project.openubl.xsender.files.xml.XmlContent;
+import io.github.project.openubl.xsender.models.Status;
 import io.github.project.openubl.xsender.models.SunatResponse;
 import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.vertx.ConsumeEvent;
@@ -144,6 +145,7 @@ public class VertxSchedulerConsumer {
     @ConsumeEvent(VertxScheduler.VERTX_CHECK_TICKET_SCHEDULER_BUS_NAME)
     public void checkTicket(Long documentId) {
         QuarkusTransaction.begin();
+        boolean shouldVerifyTicket = false;
 
         UBLDocumentEntity documentEntity = documentRepository.findById(documentId);
         if (documentEntity == null) {
@@ -181,8 +183,12 @@ public class VertxSchedulerConsumer {
                 documentEntity.setCdrFileId(cdrFileId);
             }
 
-            // Final task
-            documentEntity.setJobInProgress(false);
+            shouldVerifyTicket = sunatResponse.getSunat() != null
+                    && sunatResponse.getSunat().getTicket() != null
+                    && (sunatResponse.getStatus() == null
+                    || sunatResponse.getStatus() == Status.UNKNOWN
+                    || sunatResponse.getStatus() == Status.EN_PROCESO);
+            documentEntity.setJobInProgress(shouldVerifyTicket);
         } catch (ConnectToSUNATException e) {
             ErrorEntity errorEntity = documentEntity.getError();
             if (errorEntity == null) {
@@ -194,9 +200,15 @@ public class VertxSchedulerConsumer {
             errorEntity.setDescription("No se pudo verificar el ticket en la SUNAT");
             errorEntity.setRecoveryAction(JobRecoveryActionType.RETRY_SEND);
             errorEntity.setCount(1);
+            shouldVerifyTicket = true;
+            documentEntity.setJobInProgress(true);
         }
 
         documentEntity.persist();
         QuarkusTransaction.commit();
+
+        if (shouldVerifyTicket) {
+            schedulerManager.sendVerifyTicketAtSUNAT(documentEntity);
+        }
     }
 }

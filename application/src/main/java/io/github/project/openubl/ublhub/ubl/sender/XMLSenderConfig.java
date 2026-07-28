@@ -29,4 +29,6 @@ public class XMLSenderConfig {
 
     private String username;
     private String password;
+    private String clientId;
+    private String clientSecret;
 }

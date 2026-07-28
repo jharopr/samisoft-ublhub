@@ -36,6 +36,7 @@ import io.github.project.openubl.xsender.files.xml.XmlContent;
 import io.github.project.openubl.xsender.files.xml.XmlContentProvider;
 import io.github.project.openubl.xsender.models.Metadata;
 import io.github.project.openubl.xsender.models.Status;
+import io.github.project.openubl.xsender.models.Sunat;
 import io.github.project.openubl.xsender.models.SunatResponse;
 import io.github.project.openubl.xsender.sunat.BillServiceDestination;
 import org.apache.camel.ProducerTemplate;
@@ -48,6 +49,7 @@ import javax.xml.parsers.ParserConfigurationException;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import static io.github.project.openubl.xsender.camel.utils.CamelUtils.getBillServiceCamelData;
@@ -65,6 +67,9 @@ public class XMLSenderManager {
 
     @Inject
     ProducerTemplate producerTemplate;
+
+    @Inject
+    SunatGreRestClient sunatGreRestClient;
 
     static final List<String> validDocumentTypes = Arrays.asList(
             DocumentType.INVOICE,
@@ -112,10 +117,28 @@ public class XMLSenderManager {
                 .percepcionRetencionUrl(sunatEntity.getSunatUrlPercepcionRetencion())
                 .username(sunatEntity.getSunatUsername())
                 .password(sunatEntity.getSunatPassword())
+                .clientId(sunatEntity.getSunatClientId())
+                .clientSecret(sunatEntity.getSunatClientSecret())
                 .build();
     }
 
     public SunatResponse sendToSUNAT(byte[] file, XMLSenderConfig wsConfig) throws ConnectToSUNATException {
+        try {
+            XmlContent xmlContent = getXMLContent(file);
+            if (isGreRest(xmlContent, wsConfig)) {
+                return toSunatResponse(sunatGreRestClient.submit(
+                        file,
+                        xmlContent.getRuc(),
+                        xmlContent.getDocumentID(),
+                        wsConfig
+                ));
+            }
+        } catch (ReadXMLFileContentException e) {
+            throw new ConnectToSUNATException(e.getMessage());
+        } catch (Throwable e) {
+            throw new ConnectToSUNATException(errorMessage(e, "Could not send GRE to SUNAT"));
+        }
+
         CompanyURLs urls = CompanyURLs.builder()
                 .invoice(wsConfig.getFacturaUrl())
                 .perceptionRetention(wsConfig.getPercepcionRetencionUrl())
@@ -154,6 +177,20 @@ public class XMLSenderManager {
             XmlContent xmlContent,
             XMLSenderConfig wsConfig
     ) throws ConnectToSUNATException {
+        if (isGreRest(xmlContent, wsConfig)) {
+            try {
+                return toSunatResponse(sunatGreRestClient.verify(
+                        ticket,
+                        xmlContent.getRuc(),
+                        wsConfig
+                ));
+            } catch (Throwable e) {
+                throw new ConnectToSUNATException(
+                        errorMessage(e, "Could not verify GRE ticket at SUNAT")
+                );
+            }
+        }
+
         CompanyURLs urls = CompanyURLs.builder()
                 .invoice(wsConfig.getFacturaUrl())
                 .perceptionRetention(wsConfig.getPercepcionRetencionUrl())
@@ -172,5 +209,69 @@ public class XMLSenderManager {
         } catch (Throwable e) {
             throw new ConnectToSUNATException("Could not verify ticket");
         }
+    }
+
+    static boolean isGreRest(XmlContent xmlContent, XMLSenderConfig config) {
+        return xmlContent != null
+                && DocumentType.DESPATCH_ADVICE.equals(xmlContent.getDocumentType())
+                && config != null
+                && config.getGuiaRemisionUrl() != null
+                && config.getGuiaRemisionUrl().contains("/v1/contribuyente/gem/comprobantes");
+    }
+
+    static SunatResponse toSunatResponse(SunatGreRestClient.GreResponse response) {
+        int code = 0;
+        if (response.errorCode() != null) {
+            try {
+                code = Integer.parseInt(response.errorCode());
+            } catch (NumberFormatException ignored) {
+                code = -1;
+            }
+        }
+        Status status;
+        switch (response.state()) {
+            case PENDING:
+                status = Status.UNKNOWN;
+                break;
+            case ACCEPTED:
+                status = statusNamed("ACEPTADO");
+                break;
+            case REJECTED:
+                status = statusNamed("RECHAZADO");
+                break;
+            default:
+                status = Status.UNKNOWN;
+        }
+        return SunatResponse.builder()
+                .status(status)
+                .sunat(Sunat.builder()
+                        .ticket(response.ticket())
+                        .cdr(response.cdr())
+                        .build())
+                .metadata(Metadata.builder()
+                        .responseCode(code)
+                        .description(response.description())
+                        .notes(Collections.emptyList())
+                        .build())
+                .build();
+    }
+
+    private static Status statusNamed(String name) {
+        try {
+            return Status.valueOf(name);
+        } catch (IllegalArgumentException ignored) {
+            return Status.UNKNOWN;
+        }
+    }
+
+    private static String errorMessage(Throwable error, String fallback) {
+        Throwable current = error;
+        while (current != null) {
+            if (current.getMessage() != null && !current.getMessage().isBlank()) {
+                return current.getMessage();
+            }
+            current = current.getCause();
+        }
+        return fallback;
     }
 }
