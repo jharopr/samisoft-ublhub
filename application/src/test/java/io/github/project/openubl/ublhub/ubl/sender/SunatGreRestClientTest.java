@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -22,13 +23,20 @@ class SunatGreRestClientTest {
     private SunatGreRestClient client;
     private XMLSenderConfig config;
     private AtomicInteger ticketChecks;
+    private AtomicReference<String> oauthRequestBody;
 
     @BeforeEach
     void setUp() throws IOException {
         ticketChecks = new AtomicInteger();
+        oauthRequestBody = new AtomicReference<>();
         server = HttpServer.create(new InetSocketAddress(0), 0);
-        server.createContext("/oauth/client-id", exchange ->
-                json(exchange, 200, "{\"access_token\":\"test-token\",\"expires_in\":3600}"));
+        server.createContext("/oauth/client-id", exchange -> {
+            oauthRequestBody.set(new String(
+                    exchange.getRequestBody().readAllBytes(),
+                    StandardCharsets.UTF_8
+            ));
+            json(exchange, 200, "{\"access_token\":\"test-token\",\"expires_in\":3600}");
+        });
         server.createContext("/gre/20100066603-09-T001-00000003", exchange -> {
             assertEquals("Bearer test-token", exchange.getRequestHeaders().getFirst("Authorization"));
             String body = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
@@ -75,6 +83,7 @@ class SunatGreRestClientTest {
                 config
         );
         assertEquals(SunatGreRestClient.GreResponse.State.PENDING, submitted.state());
+        assertTrue(oauthRequestBody.get().contains("username=20100066603USER"));
 
         SunatGreRestClient.GreResponse pending =
                 client.verify(submitted.ticket(), "20100066603", config);
@@ -94,6 +103,27 @@ class SunatGreRestClientTest {
                 "F001-1",
                 config
         ));
+    }
+
+    @Test
+    void doesNotDuplicateRucWhenSolUsernameIsAlreadyComplete() throws Exception {
+        config = XMLSenderConfig.builder()
+                .guiaRemisionUrl(config.getGuiaRemisionUrl())
+                .clientId("client-id")
+                .clientSecret("client-secret")
+                .username("20100066603USER")
+                .password("password")
+                .build();
+
+        client.submit(
+                "<DespatchAdvice/>".getBytes(StandardCharsets.UTF_8),
+                "20100066603",
+                "T001-00000003",
+                config
+        );
+
+        assertTrue(oauthRequestBody.get().contains("username=20100066603USER"));
+        assertTrue(!oauthRequestBody.get().contains("username=2010006660320100066603USER"));
     }
 
     private static void json(HttpExchange exchange, int status, String body) throws IOException {

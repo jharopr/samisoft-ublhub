@@ -124,7 +124,10 @@ public class VertxSchedulerConsumer {
                 errorEntity.setDescription("No se pudo leer XML");
             } else {
                 errorEntity.setPhase(JobPhaseType.SEND_XML_FILE);
-                errorEntity.setDescription("No se pudo enviar el XML a la SUNAT");
+                errorEntity.setDescription(safeErrorDescription(
+                        "No se pudo enviar el XML a la SUNAT",
+                        e
+                ));
             }
             errorEntity.setRecoveryAction(JobRecoveryActionType.RETRY_SEND);
             errorEntity.setCount(1);
@@ -198,7 +201,10 @@ public class VertxSchedulerConsumer {
             }
 
             errorEntity.setPhase(JobPhaseType.VERIFY_TICKET);
-            errorEntity.setDescription("No se pudo verificar el ticket en la SUNAT");
+            errorEntity.setDescription(safeErrorDescription(
+                    "No se pudo verificar el ticket en la SUNAT",
+                    e
+            ));
             errorEntity.setRecoveryAction(JobRecoveryActionType.RETRY_SEND);
             errorEntity.setCount(1);
             shouldVerifyTicket = true;
@@ -211,5 +217,18 @@ public class VertxSchedulerConsumer {
         if (shouldVerifyTicket) {
             schedulerManager.sendVerifyTicketAtSUNAT(documentEntity);
         }
+    }
+
+    static String safeErrorDescription(String fallback, Throwable error) {
+        String detail = error != null ? error.getMessage() : null;
+        String description = detail == null || detail.isBlank()
+                ? fallback
+                : fallback + ": " + detail;
+        description = description
+                .replaceAll("(?i)(client_secret|password|access_token)=?[^\\s&]+", "$1=***")
+                .replaceAll("(?i)Bearer\\s+[A-Za-z0-9._-]+", "Bearer ***");
+        return description.length() <= 255
+                ? description
+                : description.substring(0, 255);
     }
 }

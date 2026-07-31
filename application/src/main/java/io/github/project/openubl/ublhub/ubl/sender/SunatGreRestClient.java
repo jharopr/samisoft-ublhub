@@ -106,11 +106,15 @@ public class SunatGreRestClient {
 
     private String requestToken(String ruc, XMLSenderConfig config)
             throws IOException, InterruptedException {
+        String configuredUsername = config.getUsername().trim();
+        String oauthUsername = configuredUsername.startsWith(ruc)
+                ? configuredUsername
+                : ruc + configuredUsername;
         String body = form("grant_type", "password")
                 + "&" + form("scope", "https://api-cpe.sunat.gob.pe")
                 + "&" + form("client_id", config.getClientId())
                 + "&" + form("client_secret", config.getClientSecret())
-                + "&" + form("username", ruc + config.getUsername())
+                + "&" + form("username", oauthUsername)
                 + "&" + form("password", config.getPassword());
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(tokenUrl.replace("{clientId}", url(config.getClientId()))))
