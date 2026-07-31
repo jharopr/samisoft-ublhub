@@ -39,8 +39,12 @@ import io.github.project.openubl.xsender.models.Status;
 import io.github.project.openubl.xsender.models.Sunat;
 import io.github.project.openubl.xsender.models.SunatResponse;
 import io.github.project.openubl.xsender.sunat.BillServiceDestination;
+import io.github.project.openubl.xbuilder.signature.XmlSignatureHelper;
 import org.apache.camel.ProducerTemplate;
 import org.jboss.logging.Logger;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
 
 import javax.enterprise.context.Dependent;
@@ -48,6 +52,7 @@ import javax.inject.Inject;
 import javax.xml.parsers.ParserConfigurationException;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -89,6 +94,11 @@ public class XMLSenderManager {
 
         try {
             XmlContent content = XmlContentProvider.getSunatDocument(new ByteArrayInputStream(file));
+            if (content != null
+                    && DocumentType.DESPATCH_ADVICE.equals(content.getDocumentType())
+                    && (content.getRuc() == null || content.getRuc().isEmpty())) {
+                content.setRuc(extractDespatchSupplierRuc(file));
+            }
             boolean isValidDocumentType = validDocumentTypes.stream().anyMatch(s -> s.equals(content.getDocumentType()));
             if (isValidDocumentType) {
                 return content;
@@ -99,6 +109,34 @@ public class XMLSenderManager {
             LOGGER.error(e);
             throw new ReadXMLFileContentException(e);
         }
+    }
+
+    static String extractDespatchSupplierRuc(byte[] file)
+            throws ParserConfigurationException, IOException, SAXException {
+        Document document = XmlSignatureHelper.convertStringToXMLDocument(
+                new String(file, StandardCharsets.UTF_8)
+        );
+        NodeList suppliers = document.getElementsByTagNameNS(
+                "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
+                "DespatchSupplierParty"
+        );
+        if (suppliers.getLength() == 0) {
+            return null;
+        }
+        Element supplier = (Element) suppliers.item(0);
+        NodeList identifications = supplier.getElementsByTagNameNS(
+                "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
+                "PartyIdentification"
+        );
+        if (identifications.getLength() == 0) {
+            return null;
+        }
+        Element identification = (Element) identifications.item(0);
+        NodeList ids = identification.getElementsByTagNameNS(
+                "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
+                "ID"
+        );
+        return ids.getLength() == 0 ? null : ids.item(0).getTextContent().trim();
     }
 
     public XMLSenderConfig getXSenderConfig(Long projectId, String ruc) {

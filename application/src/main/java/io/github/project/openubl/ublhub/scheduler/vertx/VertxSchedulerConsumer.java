@@ -119,6 +119,7 @@ public class VertxSchedulerConsumer {
             }
 
             if (e instanceof ReadXMLFileContentException) {
+                documentEntity.setXmlData(null);
                 errorEntity.setPhase(JobPhaseType.READ_XML_FILE);
                 errorEntity.setDescription("No se pudo leer XML");
             } else {

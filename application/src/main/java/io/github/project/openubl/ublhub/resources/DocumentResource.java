@@ -70,6 +70,8 @@ import org.keycloak.crypto.Algorithm;
 import org.keycloak.crypto.KeyUse;
 import org.keycloak.crypto.KeyWrapper;
 import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
 
 import javax.enterprise.context.ApplicationScoped;
@@ -89,10 +91,13 @@ import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import javax.xml.crypto.MarshalException;
+import javax.xml.crypto.dsig.XMLSignature;
 import javax.xml.crypto.dsig.XMLSignatureException;
 import javax.xml.parsers.ParserConfigurationException;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
@@ -178,10 +183,19 @@ public class DocumentResource {
     public Document createAndSignXML(ProjectEntity projectEntity, DocumentInputDto inputDto) throws NoCertificateToSignFoundException, MarshalException, InvalidAlgorithmParameterException, NoSuchAlgorithmException, IOException, ParserConfigurationException, XMLSignatureException, SAXException {
         XMLResult xmlResult = xmlGeneratorManager.createXMLString(projectEntity, inputDto);
         String algorithm = inputDto.getSpec().getSignature() != null ? inputDto.getSpec().getSignature().getAlgorithm() : Algorithm.RS256;
+        KeyManager.ActiveRsaKey rsaKey = resolveSigningKey(projectEntity, xmlResult.getRuc(), algorithm);
 
+        return XMLSigner.signXML(xmlResult.getXml(), "OPENUBL", rsaKey.getCertificate(), rsaKey.getPrivateKey());
+    }
+
+    KeyManager.ActiveRsaKey resolveSigningKey(
+            ProjectEntity projectEntity,
+            String ruc,
+            String algorithm
+    ) throws NoCertificateToSignFoundException {
         KeyWrapper keyWrapper = null;
 
-        CompanyEntity companyEntity = companyRepository.findByRuc(projectEntity.getId(), xmlResult.getRuc());
+        CompanyEntity companyEntity = companyRepository.findByRuc(projectEntity.getId(), ruc);
         if (companyEntity != null) {
             ComponentOwner companyOwner = ComponentOwner.builder()
                     .id(companyEntity.getId())
@@ -202,14 +216,66 @@ public class DocumentResource {
             throw new NoCertificateToSignFoundException("Could not find a key to sign neither in project or company level");
         }
 
-        KeyManager.ActiveRsaKey rsaKey = KeyManager.ActiveRsaKey.builder()
+        return KeyManager.ActiveRsaKey.builder()
                 .kid(keyWrapper.getKid())
                 .privateKey((PrivateKey) keyWrapper.getPrivateKey())
                 .publicKey((PublicKey) keyWrapper.getPublicKey())
                 .certificate(keyWrapper.getCertificate())
                 .build();
+    }
 
-        return XMLSigner.signXML(xmlResult.getXml(), "OPENUBL", rsaKey.getCertificate(), rsaKey.getPrivateKey());
+    byte[] signUploadedDespatchAdvice(ProjectEntity projectEntity, byte[] xmlBytes)
+            throws NoCertificateToSignFoundException, MarshalException,
+            InvalidAlgorithmParameterException, NoSuchAlgorithmException,
+            IOException, ParserConfigurationException, XMLSignatureException,
+            SAXException {
+        String xml = new String(xmlBytes, StandardCharsets.UTF_8);
+        Document document = XmlSignatureHelper.convertStringToXMLDocument(xml);
+        if (!"DespatchAdvice".equals(document.getDocumentElement().getLocalName())
+                || document.getElementsByTagNameNS(XMLSignature.XMLNS, "Signature").getLength() > 0) {
+            return xmlBytes;
+        }
+
+        String ruc = extractDespatchSupplierRuc(document);
+        if (ruc == null || ruc.isBlank()) {
+            throw new IllegalArgumentException("Could not extract supplier RUC from DespatchAdvice");
+        }
+        KeyManager.ActiveRsaKey rsaKey = resolveSigningKey(projectEntity, ruc, Algorithm.RS256);
+        Document signedDocument = XMLSigner.signXML(
+                xml,
+                "OPENUBL",
+                rsaKey.getCertificate(),
+                rsaKey.getPrivateKey()
+        );
+        try {
+            return XmlSignatureHelper.getBytesFromDocument(signedDocument);
+        } catch (Exception e) {
+            throw new IOException("Could not serialize signed DespatchAdvice", e);
+        }
+    }
+
+    static String extractDespatchSupplierRuc(Document document) {
+        NodeList suppliers = document.getElementsByTagNameNS(
+                "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
+                "DespatchSupplierParty"
+        );
+        if (suppliers.getLength() == 0) {
+            return null;
+        }
+        Element supplier = (Element) suppliers.item(0);
+        NodeList identifications = supplier.getElementsByTagNameNS(
+                "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
+                "PartyIdentification"
+        );
+        if (identifications.getLength() == 0) {
+            return null;
+        }
+        Element identification = (Element) identifications.item(0);
+        NodeList ids = identification.getElementsByTagNameNS(
+                "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
+                "ID"
+        );
+        return ids.getLength() == 0 ? null : ids.item(0).getTextContent().trim();
     }
 
     public String saveXML(Document xml) throws Exception {
@@ -241,7 +307,26 @@ public class DocumentResource {
             return documentDtoNotFoundResponse.get();
         }
 
-        String fileId = filesManager.createFile(formData.file.uploadedFile().toFile(), true);
+        byte[] uploadedBytes;
+        try {
+            uploadedBytes = Files.readAllBytes(formData.file.uploadedFile());
+        } catch (IOException e) {
+            LOG.warn("Could not read uploaded document", e);
+            return documentDtoBadRequestResponse.get();
+        }
+
+        try {
+            uploadedBytes = signUploadedDespatchAdvice(projectEntity, uploadedBytes);
+        } catch (ParserConfigurationException | SAXException e) {
+            LOG.debug("Uploaded document is not parseable XML; scheduling regular validation", e);
+        } catch (NoCertificateToSignFoundException | MarshalException |
+                 InvalidAlgorithmParameterException | NoSuchAlgorithmException |
+                 IOException | XMLSignatureException | IllegalArgumentException e) {
+            LOG.warn("Could not sign uploaded DespatchAdvice", e);
+            return documentDtoBadRequestResponse.get();
+        }
+
+        String fileId = filesManager.createFile(uploadedBytes, true);
         UBLDocumentEntity entity = createAndScheduleSend(projectEntity, fileId);
         DocumentDto dto = documentMapper.toDto(entity);
 
