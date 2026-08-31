@@ -206,7 +206,7 @@ jobs:
           docker load -i artifacts/ublhub-bundle-container-image.tar
           docker load -i artifacts/ublhub-catalog-container-image.tar
       - name: Setup Minikube
-        uses: manusa/actions-setup-minikube@v2.7.2
+        uses: manusa/actions-setup-minikube@v2.18.0
         with:
           minikube version: v1.28.0
           kubernetes version: ${{ matrix.k8s-version }}
