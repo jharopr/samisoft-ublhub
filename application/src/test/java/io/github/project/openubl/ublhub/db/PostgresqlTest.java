@@ -29,7 +29,10 @@ public class PostgresqlTest extends AbstractDbTest {
     public static class Profile implements QuarkusTestProfile {
         @Override
         public Map<String, String> getConfigOverrides() {
-            return Map.of("quarkus.datasource.db-kind", "postgresql");
+            return Map.of(
+                    "quarkus.datasource.db-kind", "postgresql",
+                    "quarkus.flyway.locations", "db/migration"
+            );
         }
     }
 }

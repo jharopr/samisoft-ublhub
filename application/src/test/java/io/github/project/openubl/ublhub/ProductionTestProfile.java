@@ -35,6 +35,7 @@ public class ProductionTestProfile implements QuarkusTestProfile {
     public Map<String, String> getConfigOverrides() {
         return Map.of(
                 "quarkus.datasource.db-kind", "postgresql",
+                "quarkus.flyway.locations", "db/migration",
                 "openubl.storage.type", "minio",
                 "openubl.messaging.type", "jms",
                 "openubl.auth.enabled", "true"

@@ -39,11 +39,16 @@ public abstract class AbstractBaseTest {
         String password = config.getValue("quarkus.datasource.password", String.class);
 
         String jdbcUrl = config.getValue("quarkus.datasource.jdbc.url", String.class);
+        String[] locations = config
+                .getOptionalValue("quarkus.flyway.locations", String.class)
+                .orElse("db/migration")
+                .split(",");
 
         // Flyway
         return Flyway.configure()
                 .cleanDisabled(false)
                 .dataSource(jdbcUrl, username, password)
+                .locations(locations)
                 .connectRetries(120)
                 .load();
     }
